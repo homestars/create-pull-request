@@ -106,6 +106,12 @@ export async function createPullRequest(inputs: Inputs): Promise<void> {
         `The 'base' and 'branch' for a pull request must be different branches. Unable to continue.`
       )
     }
+    // For self-hosted runners the repository state persists between runs.
+    // This command prunes the stale remote ref when the pull request branch was
+    // deleted after being merged or closed. Without this the push using
+    // '--force-with-lease' fails due to "stale info."
+    // https://github.com/peter-evans/create-pull-request/issues/633
+    await git.exec(['remote', 'prune', branchRemoteName])
     core.endGroup()
 
     // Apply the branch suffix if set
@@ -189,11 +195,24 @@ export async function createPullRequest(inputs: Inputs): Promise<void> {
 
     if (result.hasDiffWithBase) {
       // Create or update the pull request
-      await githubHelper.createOrUpdatePullRequest(
+      const pull = await githubHelper.createOrUpdatePullRequest(
         inputs,
         baseRemote.repository,
         branchRepository
       )
+
+      // Set outputs
+      core.startGroup('Setting outputs')
+      core.setOutput('pull-request-number', pull.number)
+      core.setOutput('pull-request-url', pull.html_url)
+      if (pull.created) {
+        core.setOutput('pull-request-operation', 'created')
+      } else if (result.action == 'updated') {
+        core.setOutput('pull-request-operation', 'updated')
+      }
+      // Deprecated
+      core.exportVariable('PULL_REQUEST_NUMBER', pull.number)
+      core.endGroup()
     } else {
       // There is no longer a diff with the base
       // Check we are in a state where a branch exists
@@ -209,6 +228,10 @@ export async function createPullRequest(inputs: Inputs): Promise<void> {
             branchRemoteName,
             `refs/heads/${inputs.branch}`
           ])
+          // Set outputs
+          core.startGroup('Setting outputs')
+          core.setOutput('pull-request-operation', 'closed')
+          core.endGroup()
         }
       }
     }

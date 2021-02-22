@@ -13,6 +13,7 @@ interface Repository {
 interface Pull {
   number: number
   html_url: string
+  created: boolean
 }
 
 export class GitHubHelper {
@@ -23,6 +24,7 @@ export class GitHubHelper {
     if (token) {
       options.auth = `${token}`
     }
+    options.baseUrl = process.env['GITHUB_API_URL'] || 'https://api.github.com'
     this.octokit = new Octokit(options)
   }
 
@@ -54,13 +56,16 @@ export class GitHubHelper {
       )
       return {
         number: pull.number,
-        html_url: pull.html_url
+        html_url: pull.html_url,
+        created: true
       }
     } catch (e) {
       if (
-        !e.message ||
-        !e.message.includes(`A pull request already exists for ${headBranch}`)
+        e.message &&
+        e.message.includes(`A pull request already exists for ${headBranch}`)
       ) {
+        core.info(`A pull request already exists for ${headBranch}`)
+      } else {
         throw e
       }
     }
@@ -84,7 +89,8 @@ export class GitHubHelper {
     )
     return {
       number: pull.number,
-      html_url: pull.html_url
+      html_url: pull.html_url,
+      created: false
     }
   }
 
@@ -104,40 +110,38 @@ export class GitHubHelper {
     inputs: Inputs,
     baseRepository: string,
     headRepository: string
-  ): Promise<void> {
+  ): Promise<Pull> {
     const [headOwner] = headRepository.split('/')
     const headBranch = `${headOwner}:${inputs.branch}`
 
     // Create or update the pull request
     const pull = await this.createOrUpdate(inputs, baseRepository, headBranch)
 
-    // Set outputs
-    core.startGroup('Setting outputs')
-    core.setOutput('pull-request-number', pull.number)
-    core.setOutput('pull-request-url', pull.html_url)
-    // Deprecated
-    core.exportVariable('PULL_REQUEST_NUMBER', pull.number)
-    core.endGroup()
-
-    // Set milestone, labels and assignees
-    const updateIssueParams = {}
+    // Apply milestone
     if (inputs.milestone) {
-      updateIssueParams['milestone'] = inputs.milestone
       core.info(`Applying milestone '${inputs.milestone}'`)
-    }
-    if (inputs.labels.length > 0) {
-      updateIssueParams['labels'] = inputs.labels
-      core.info(`Applying labels '${inputs.labels}'`)
-    }
-    if (inputs.assignees.length > 0) {
-      updateIssueParams['assignees'] = inputs.assignees
-      core.info(`Applying assignees '${inputs.assignees}'`)
-    }
-    if (Object.keys(updateIssueParams).length > 0) {
       await this.octokit.issues.update({
         ...this.parseRepository(baseRepository),
         issue_number: pull.number,
-        ...updateIssueParams
+        milestone: inputs.milestone
+      })
+    }
+    // Apply labels
+    if (inputs.labels.length > 0) {
+      core.info(`Applying labels '${inputs.labels}'`)
+      await this.octokit.issues.addLabels({
+        ...this.parseRepository(baseRepository),
+        issue_number: pull.number,
+        labels: inputs.labels
+      })
+    }
+    // Apply assignees
+    if (inputs.assignees.length > 0) {
+      core.info(`Applying assignees '${inputs.assignees}'`)
+      await this.octokit.issues.addAssignees({
+        ...this.parseRepository(baseRepository),
+        issue_number: pull.number,
+        assignees: inputs.assignees
       })
     }
 
@@ -166,5 +170,7 @@ export class GitHubHelper {
         }
       }
     }
+
+    return pull
   }
 }

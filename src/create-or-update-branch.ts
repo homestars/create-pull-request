@@ -78,15 +78,6 @@ async function isEven(
   )
 }
 
-async function hasDiff(
-  git: GitCommandManager,
-  branch1: string,
-  branch2: string
-): Promise<boolean> {
-  const result = await git.diff([`${branch1}..${branch2}`])
-  return result.length > 0
-}
-
 function splitLines(multilineString: string): string[] {
   return multilineString
     .split('\n')
@@ -139,8 +130,18 @@ export async function createOrUpdateBranch(
   // Perform fetch and reset the working base
   // Commits made during the workflow will be removed
   if (workingBaseType == WorkingBaseType.Branch) {
-    core.info(`Resetting working base branch '${workingBase}' to its remote`)
-    await git.fetch([`${workingBase}:${workingBase}`], baseRemote, ['--force'])
+    core.info(`Resetting working base branch '${workingBase}'`)
+    if (branchRemoteName == 'fork') {
+      // If pushing to a fork we must fetch with 'unshallow' to avoid the following error on git push
+      // ! [remote rejected] HEAD -> tests/push-branch-to-fork (shallow update not allowed)
+      await git.fetch([`${workingBase}:${workingBase}`], baseRemote, [
+        '--force'
+      ])
+    } else {
+      // If the remote is 'origin' we can git reset
+      await git.checkout(workingBase)
+      await git.exec(['reset', '--hard', `${baseRemote}/${workingBase}`])
+    }
   }
 
   // If the working base is not the base, rebase the temp branch commits
@@ -177,7 +178,7 @@ export async function createOrUpdateBranch(
     // The pull request branch does not exist
     core.info(`Pull request branch '${branch}' does not exist yet.`)
     // Create the pull request branch
-    await git.checkout(branch, 'HEAD')
+    await git.checkout(branch, tempBranch)
     // Check if the pull request branch is ahead of the base
     result.hasDiffWithBase = await isAhead(git, base, branch)
     if (result.hasDiffWithBase) {
@@ -205,7 +206,7 @@ export async function createOrUpdateBranch(
     //   to have a diff with the base due to different commits for the same changes.
     // For changes on base this reset is equivalent to a rebase of the pull request branch.
     if (
-      (await hasDiff(git, branch, tempBranch)) ||
+      (await git.hasDiff([`${branch}..${tempBranch}`])) ||
       !(await isAhead(git, base, tempBranch))
     ) {
       core.info(`Resetting '${branch}'`)
